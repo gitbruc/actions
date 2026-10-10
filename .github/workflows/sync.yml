@@ -1,0 +1,60 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 每天凌晨 00:00 UTC 时间同步一次，可以自行调整
+  workflow_dispatch: # 允许手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  sync-branches:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # 如果某一个分支失败，不要取消其他分支的任务
+      matrix:
+        # 在这里列出所有你需要同步的分支名称
+        branch: [free-disk, clang-20, install-llvm, install-llvm-20, install-llvm-19, openwrt-build-setup]
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.branch }} # 关键：检出对应分支
+          fetch-depth: 0 # 获取完整历史记录，否则可能导致同步冲突
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+      - name: Sync with upstream repository
+        run: |
+          BRANCH="${{ matrix.branch }}"
+          echo "正在处理分支: $BRANCH"
+
+          git remote add upstream https://github.com/sbwml/actions
+          git fetch upstream
+
+          # 强制重置：将当前分支的指针直接指向上游的最新提交
+          git reset --hard upstream/$BRANCH
+
+          # 3. 恢复配置文件 (仅在当前运行的分支上执行)
+          # 判断逻辑：如果当前分支名 等于 触发 Workflow 的分支名
+          if [[ "$BRANCH" == "${{ github.ref_name }}" ]]; then
+            echo "🔧 [Main Branch] Detecting config loss..."
+            
+            # 尝试从本次运行的 commit 中恢复 .github 目录
+            git checkout ${{ github.sha }} -- .github/workflows/sync.yml
+            
+            # 如果产生了变更（即文件本来被删了，现在被恢复了），就提交
+            if [ -n "$(git status --porcelain)" ]; then
+              git add .github
+              git commit -m "Sync: Restore workflow config"
+              echo "✅ 配置文件已恢复并提交 (这也是一次保活操作)"
+            fi
+          fi
+
+          # 4. 强制推送
+          git push -f origin HEAD:refs/heads/$BRANCH
